@@ -1,0 +1,27 @@
+name: PLN DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Ambil kode dari repo
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      # 2. Build Docker image
+      - name: Build Docker Image
+        run: docker build -t pln-api:${{ github.sha }} .
+
+      # 3. Scan keamanan image dengan Trivy
+      - name: Scan Image dengan Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: pln-api:${{ github.sha }}
+          format: table
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
