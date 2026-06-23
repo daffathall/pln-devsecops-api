@@ -1,20 +1,15 @@
 from flask import Flask, jsonify, request
 import jwt
 import datetime
+import sqlite3
+from database import init_db
 
 app = Flask(__name__)
-
-# Secret key untuk sign token
-# Di production ini harus disimpan di environment variable, BUKAN di kode!
 SECRET_KEY = "pln-secret-key-2026"
 
-pelanggan = [
-    {"id": 1, "nama": "Budi Santoso", "tarif": "R1", "tagihan": 150000},
-    {"id": 2, "nama": "Siti Rahayu", "tarif": "R2", "tagihan": 320000},
-    {"id": 3, "nama": "Agus Wijaya", "tarif": "B1", "tagihan": 875000},
-]
+# Inisialisasi database saat startup
+init_db()
 
-# Simulasi database user
 USERS = {
     "budi":  {"password": "pass123", "id": 1,    "role": "pelanggan"},
     "siti":  {"password": "pass456", "id": 2,    "role": "pelanggan"},
@@ -33,30 +28,25 @@ def verify_token():
     if not token:
         return None, jsonify({"error": "Unauthorized - token tidak ada"}), 401
     try:
-        # Decode & verifikasi token (cek signature + expiry otomatis)
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         return payload, None, None
     except jwt.ExpiredSignatureError:
-        return None, jsonify({"error": "Token sudah expired, login lagi"}), 401
+        return None, jsonify({"error": "Token expired, login lagi"}), 401
     except jwt.InvalidTokenError:
         return None, jsonify({"error": "Token tidak valid"}), 401
 
 @app.route('/')
 def home():
-    return jsonify({"message": "PLN API berjalan!", "version": "3.0"})
+    return jsonify({"message": "PLN API berjalan!", "version": "4.0"})
 
-# Endpoint login → dapat JWT token
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
-
     user = USERS.get(username)
     if not user or user["password"] != password:
         return jsonify({"error": "Username atau password salah"}), 401
-
-    # Buat JWT token dengan expiry 1 jam
     payload = {
         "username": username,
         "id": user["id"],
@@ -66,32 +56,68 @@ def login():
     token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     return jsonify({"token": token, "expires_in": "1 jam"})
 
+# ❌ VULNERABLE - SQL Injection!
+@app.route('/cari')
+def cari_pelanggan():
+    payload, error, code = verify_token()
+    if error:
+        return error, code
+    
+    if payload["role"] != "admin":
+        return jsonify({"error": "Forbidden"}), 403
+
+    nama = request.args.get("nama", "")
+    
+    conn = sqlite3.connect('pln.db')
+    c = conn.cursor()
+    
+    # ❌ INI BERBAHAYA - string langsung digabung!
+    ##query = f"SELECT * FROM pelanggan WHERE nama LIKE '%{nama}%'"
+    ## c.execute(query)
+    
+    #✅ AMAN - gunakan parameterized query
+    c.execute("SELECT * FROM pelanggan WHERE nama LIKE ?", (f'%{nama}%',))
+    # print(f"Query: {query}")
+    rows = c.fetchall()
+    conn.close()
+    
+    if not rows:
+        return jsonify({"message": "Data tidak ditemukan"}), 404
+    
+    hasil = [{"id": r[0], "nama": r[1], "tarif": r[2], "tagihan": r[3]} for r in rows]
+    return jsonify(hasil)
+
 @app.route('/pelanggan')
 def get_pelanggan():
     payload, error, code = verify_token()
     if error:
         return error, code
-
+    conn = sqlite3.connect('pln.db')
+    c = conn.cursor()
     if payload["role"] == "admin":
-        return jsonify(pelanggan)
-
-    id_user = payload["id"]
-    data = next((p for p in pelanggan if p["id"] == id_user), None)
-    return jsonify([data])
+        c.execute("SELECT * FROM pelanggan")
+    else:
+        c.execute("SELECT * FROM pelanggan WHERE id = ?", (payload["id"],))
+    rows = c.fetchall()
+    conn.close()
+    hasil = [{"id": r[0], "nama": r[1], "tarif": r[2], "tagihan": r[3]} for r in rows]
+    return jsonify(hasil)
 
 @app.route('/pelanggan/<int:id>')
 def get_pelanggan_by_id(id):
     payload, error, code = verify_token()
     if error:
         return error, code
-
     if payload["role"] != "admin" and payload["id"] != id:
-        return jsonify({"error": "Forbidden - kamu tidak berhak akses data ini"}), 403
-
-    data = next((p for p in pelanggan if p["id"] == id), None)
-    if data:
-        return jsonify(data)
-    return jsonify({"error": "Pelanggan tidak ditemukan"}), 404
+        return jsonify({"error": "Forbidden"}), 403
+    conn = sqlite3.connect('pln.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM pelanggan WHERE id = ?", (id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return jsonify({"id": row[0], "nama": row[1], "tarif": row[2], "tagihan": row[3]})
+    return jsonify({"error": "Tidak ditemukan"}), 404
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
