@@ -1,15 +1,12 @@
 from flask import Flask, jsonify, request
+import jwt
+import datetime
 
 app = Flask(__name__)
 
-# Simulasi token per pelanggan
-# Di dunia nyata ini dari database
-VALID_TOKENS = {
-    "token-budi-001": 1,   # token milik Budi → hanya bisa akses id 1
-    "token-siti-002": 2,   # token milik Siti → hanya bisa akses id 2
-    "token-agus-003": 3,   # token milik Agus → hanya bisa akses id 3
-    "token-admin-999": None # admin → bisa akses semua
-}
+# Secret key untuk sign token
+# Di production ini harus disimpan di environment variable, BUKAN di kode!
+SECRET_KEY = "pln-secret-key-2026"
 
 pelanggan = [
     {"id": 1, "nama": "Budi Santoso", "tarif": "R1", "tagihan": 150000},
@@ -17,47 +14,80 @@ pelanggan = [
     {"id": 3, "nama": "Agus Wijaya", "tarif": "B1", "tagihan": 875000},
 ]
 
+# Simulasi database user
+USERS = {
+    "budi":  {"password": "pass123", "id": 1,    "role": "pelanggan"},
+    "siti":  {"password": "pass456", "id": 2,    "role": "pelanggan"},
+    "agus":  {"password": "pass789", "id": 3,    "role": "pelanggan"},
+    "admin": {"password": "admin99", "id": None, "role": "admin"},
+}
+
 def get_token():
-    # Ambil token dari header request
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth.split(" ")[1]
     return None
 
+def verify_token():
+    token = get_token()
+    if not token:
+        return None, jsonify({"error": "Unauthorized - token tidak ada"}), 401
+    try:
+        # Decode & verifikasi token (cek signature + expiry otomatis)
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return payload, None, None
+    except jwt.ExpiredSignatureError:
+        return None, jsonify({"error": "Token sudah expired, login lagi"}), 401
+    except jwt.InvalidTokenError:
+        return None, jsonify({"error": "Token tidak valid"}), 401
+
 @app.route('/')
 def home():
-    return jsonify({"message": "PLN API berjalan!", "version": "2.0"})
+    return jsonify({"message": "PLN API berjalan!", "version": "3.0"})
+
+# Endpoint login → dapat JWT token
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    user = USERS.get(username)
+    if not user or user["password"] != password:
+        return jsonify({"error": "Username atau password salah"}), 401
+
+    # Buat JWT token dengan expiry 1 jam
+    payload = {
+        "username": username,
+        "id": user["id"],
+        "role": user["role"],
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return jsonify({"token": token, "expires_in": "1 jam"})
 
 @app.route('/pelanggan')
 def get_pelanggan():
-    token = get_token()
-    
-    # Cek token valid
-    if token not in VALID_TOKENS:
-        return jsonify({"error": "Unauthorized - token tidak valid"}), 401
-    
-    # Admin bisa lihat semua
-    if VALID_TOKENS[token] is None:
+    payload, error, code = verify_token()
+    if error:
+        return error, code
+
+    if payload["role"] == "admin":
         return jsonify(pelanggan)
-    
-    # Pelanggan biasa hanya lihat datanya sendiri
-    id_berhak = VALID_TOKENS[token]
-    data = next((p for p in pelanggan if p["id"] == id_berhak), None)
+
+    id_user = payload["id"]
+    data = next((p for p in pelanggan if p["id"] == id_user), None)
     return jsonify([data])
 
 @app.route('/pelanggan/<int:id>')
 def get_pelanggan_by_id(id):
-    token = get_token()
-    
-    # Cek token valid
-    if token not in VALID_TOKENS:
-        return jsonify({"error": "Unauthorized - token tidak valid"}), 401
-    
-    # Cek apakah berhak akses id ini
-    id_berhak = VALID_TOKENS[token]
-    if id_berhak is not None and id_berhak != id:
+    payload, error, code = verify_token()
+    if error:
+        return error, code
+
+    if payload["role"] != "admin" and payload["id"] != id:
         return jsonify({"error": "Forbidden - kamu tidak berhak akses data ini"}), 403
-    
+
     data = next((p for p in pelanggan if p["id"] == id), None)
     if data:
         return jsonify(data)
