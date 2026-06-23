@@ -2,10 +2,17 @@ from flask import Flask, jsonify, request
 import jwt
 import datetime
 import sqlite3
+import os
+from dotenv import load_dotenv
 from database import init_db
 
+# Load environment variables dari .env
+load_dotenv()
+
 app = Flask(__name__)
-SECRET_KEY = "pln-secret-key-2026"
+
+# Ambil dari environment variable, bukan hardcoded!
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback-key-ganti-ini")
 
 # Inisialisasi database saat startup
 init_db()
